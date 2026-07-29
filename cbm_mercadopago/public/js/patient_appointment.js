@@ -10,22 +10,50 @@ frappe.ui.form.on("Patient Appointment", {
 		frm.add_custom_button(
 			__("Gerar link de pagamento"),
 			() => gerar_link(frm),
-			__("Mercado Pago")
+			__("Pagamento")
 		);
 	},
 });
 
-function gerar_link(frm) {
+function gerar_link(frm, gateway) {
 	frappe.call({
 		method: "cbm_mercadopago.appointment.gerar_link_pagamento",
-		args: { appointment: frm.doc.name, enviar_email: 0 },
+		args: { appointment: frm.doc.name, enviar_email: 0, gateway: gateway || null },
 		freeze: true,
-		freeze_message: __("Gerando link no Mercado Pago..."),
+		freeze_message: __("Gerando link de pagamento..."),
 		callback: (r) => {
-			if (!r.message || !r.message.payment_url) return;
+			if (!r.message) return;
+			// Mais de um meio de pagamento configurado: perguntar qual usar.
+			if (r.message.escolher_gateway) {
+				escolher_gateway(frm, r.message.escolher_gateway);
+				return;
+			}
+			if (!r.message.payment_url) return;
 			mostrar_link(frm, r.message);
 		},
 	});
+}
+
+function escolher_gateway(frm, opcoes) {
+	const d = new frappe.ui.Dialog({
+		title: __("Qual meio de pagamento?"),
+		fields: [
+			{
+				fieldname: "gateway",
+				fieldtype: "Select",
+				label: __("Meio de pagamento"),
+				options: opcoes.join("\n"),
+				default: opcoes.includes("Mercado Pago") ? "Mercado Pago" : opcoes[0],
+				reqd: 1,
+			},
+		],
+		primary_action_label: __("Gerar link"),
+		primary_action(valores) {
+			d.hide();
+			gerar_link(frm, valores.gateway);
+		},
+	});
+	d.show();
 }
 
 function mostrar_link(frm, dados) {

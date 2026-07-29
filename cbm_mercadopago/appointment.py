@@ -19,15 +19,25 @@ STATUS_BLOQUEADOS = {"Cancelled", "Closed", "Checked Out", "No Show"}
 
 
 @frappe.whitelist()
-def gerar_link_pagamento(appointment: str, enviar_email: int = 0) -> dict:
-	"""Devolve (e opcionalmente envia por e-mail) o link do Checkout Pro."""
+def gerar_link_pagamento(appointment: str, enviar_email: int = 0, gateway: str | None = None) -> dict:
+	"""Devolve (e opcionalmente envia por e-mail) o link de pagamento.
+
+	`gateway` é opcional. Quando há um só meio configurado, ele é usado
+	automaticamente; quando há mais de um e nenhum foi escolhido, devolve
+	`escolher_gateway` para a tela perguntar. Isso permite ligar outro meio
+	(Stripe, por exemplo) apenas configurando, sem mexer no código.
+	"""
 	doc = frappe.get_doc("Patient Appointment", appointment)
 	doc.check_permission("write")
 
-	_validar_consulta(doc)
+	_validar_consulta(doc, gateway)
+
+	conta = _resolver_conta_gateway(gateway)
+	if isinstance(conta, dict):
+		return conta  # a tela precisa perguntar qual meio usar
 
 	sales_invoice = _garantir_fatura(doc)
-	payment_request = _garantir_payment_request(sales_invoice, bool(int(enviar_email or 0)))
+	payment_request = _garantir_payment_request(sales_invoice, bool(int(enviar_email or 0)), conta)
 
 	if not payment_request.payment_url:
 		# Sintoma clássico de falha engolida pelo `payment_gateway_validation()`.
@@ -45,7 +55,7 @@ def gerar_link_pagamento(appointment: str, enviar_email: int = 0) -> dict:
 	}
 
 
-def _validar_consulta(doc):
+def _validar_consulta(doc, gateway: str | None = None):
 	if doc.status in STATUS_BLOQUEADOS:
 		frappe.throw(_("Não é possível cobrar uma consulta com situação {0}.").format(_(doc.status)))
 
@@ -56,9 +66,11 @@ def _validar_consulta(doc):
 			)
 		)
 
-	settings = frappe.get_cached_doc("Mercado Pago Settings")
-	if not settings.enabled:
-		frappe.throw(_("A integração com o Mercado Pago está desativada."))
+	# A checagem de "ativado" só se aplica ao nosso gateway; os demais
+	# (Stripe etc.) têm cada um a sua própria configuração.
+	if gateway in (None, GATEWAY) and not frappe.get_cached_doc("Mercado Pago Settings").enabled:
+		if gateway == GATEWAY or _gateways_configurados() == [GATEWAY]:
+			frappe.throw(_("A integração com o Mercado Pago está desativada."))
 
 
 def _garantir_fatura(doc) -> str:
@@ -86,7 +98,7 @@ def _garantir_fatura(doc) -> str:
 	return doc.ref_sales_invoice
 
 
-def _garantir_payment_request(sales_invoice: str, enviar_email: bool):
+def _garantir_payment_request(sales_invoice: str, enviar_email: bool, conta_gateway: str):
 	"""Reaproveita um pedido de pagamento pendente; senão cria um novo."""
 	existente = frappe.db.get_value(
 		"Payment Request",
@@ -106,7 +118,7 @@ def _garantir_payment_request(sales_invoice: str, enviar_email: bool):
 	resultado = make_payment_request(
 		dt="Sales Invoice",
 		dn=sales_invoice,
-		payment_gateway_account=_conta_gateway(),
+		payment_gateway_account=conta_gateway,
 		submit_doc=True,
 		mute_email=not enviar_email,
 		return_doc=True,
@@ -118,14 +130,49 @@ def _garantir_payment_request(sales_invoice: str, enviar_email: bool):
 	return frappe.get_doc("Payment Request", nome)
 
 
-def _conta_gateway() -> str:
-	"""A Payment Gateway Account do Mercado Pago, criada quando o gateway é ativado."""
-	conta = frappe.db.get_value("Payment Gateway Account", {"payment_gateway": GATEWAY}, "name")
-	if not conta:
+def _gateways_configurados() -> list[str]:
+	"""Meios de pagamento com conta de gateway criada nesta instalação."""
+	return sorted(
+		{
+			c.payment_gateway
+			for c in frappe.get_all("Payment Gateway Account", fields=["payment_gateway"])
+			if c.payment_gateway
+		}
+	)
+
+
+@frappe.whitelist()
+def listar_gateways() -> list[str]:
+	return _gateways_configurados()
+
+
+def _resolver_conta_gateway(gateway: str | None):
+	"""Decide qual meio de pagamento usar.
+
+	Devolve o nome da Payment Gateway Account, ou um dict pedindo escolha
+	quando há mais de um meio configurado e nenhum foi indicado.
+	"""
+	disponiveis = _gateways_configurados()
+
+	if not disponiveis:
 		frappe.throw(
 			_(
-				"Não existe conta de gateway para o {0}. Abra o Mercado Pago Settings e salve "
-				"para que ela seja criada."
-			).format(GATEWAY)
+				"Nenhum meio de pagamento está configurado. Abra o Mercado Pago Settings e salve "
+				"para que a conta de gateway seja criada."
+			)
 		)
+
+	if gateway:
+		if gateway not in disponiveis:
+			frappe.throw(_("O meio de pagamento {0} não está configurado.").format(gateway))
+		escolhido = gateway
+	elif len(disponiveis) == 1:
+		escolhido = disponiveis[0]
+	else:
+		# Mais de um meio ativo e nenhum indicado: quem decide é o usuário.
+		return {"escolher_gateway": disponiveis}
+
+	conta = frappe.db.get_value("Payment Gateway Account", {"payment_gateway": escolhido}, "name")
+	if not conta:
+		frappe.throw(_("Não existe conta de gateway para {0}.").format(escolhido))
 	return conta
