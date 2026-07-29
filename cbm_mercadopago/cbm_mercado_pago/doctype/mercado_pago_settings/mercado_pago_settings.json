@@ -1,0 +1,145 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-07-29 00:00:00.000000",
+ "description": "Credenciais e comportamento da integração com o Mercado Pago (Checkout Pro).",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "sec_ambiente",
+  "use_sandbox",
+  "ambiente_html",
+  "sec_sandbox",
+  "sandbox_access_token",
+  "col_sandbox",
+  "sandbox_webhook_secret",
+  "sec_producao",
+  "producao_html",
+  "production_access_token",
+  "col_producao",
+  "production_webhook_secret",
+  "sec_comportamento",
+  "unpaid_expiry_minutes",
+  "col_comportamento",
+  "statement_descriptor"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "description": "Enquanto desmarcado, nenhum link de pagamento é gerado.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Ativado"
+  },
+  {
+   "fieldname": "sec_ambiente",
+   "fieldtype": "Section Break",
+   "label": "Ambiente"
+  },
+  {
+   "default": "1",
+   "description": "Marcado = usa as credenciais de TESTE. Só desmarque no go-live, depois da Fase 6 aprovada.",
+   "fieldname": "use_sandbox",
+   "fieldtype": "Check",
+   "label": "Usar ambiente de teste (sandbox)"
+  },
+  {
+   "fieldname": "ambiente_html",
+   "fieldtype": "HTML",
+   "options": "<div class=\"alert alert-warning\" style=\"margin-top:10px\">Com o ambiente de teste desmarcado, cobranças são <b>reais</b>. Regra do projeto: produção só depois da Fase 6 verde.</div>"
+  },
+  {
+   "fieldname": "sec_sandbox",
+   "fieldtype": "Section Break",
+   "label": "Credenciais de teste"
+  },
+  {
+   "fieldname": "sandbox_access_token",
+   "fieldtype": "Password",
+   "label": "Access Token de teste"
+  },
+  {
+   "fieldname": "col_sandbox",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Chave secreta do webhook, revelada no painel do Mercado Pago em Webhooks > Configurar notificação.",
+   "fieldname": "sandbox_webhook_secret",
+   "fieldtype": "Password",
+   "label": "Chave secreta do webhook (teste)"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "sec_producao",
+   "fieldtype": "Section Break",
+   "label": "Credenciais de produção"
+  },
+  {
+   "fieldname": "producao_html",
+   "fieldtype": "HTML",
+   "options": "<div class=\"alert alert-danger\">Só preencher no go-live (Fase 7), com a Fase 6 aprovada.</div>"
+  },
+  {
+   "fieldname": "production_access_token",
+   "fieldtype": "Password",
+   "label": "Access Token de produção"
+  },
+  {
+   "fieldname": "col_producao",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "production_webhook_secret",
+   "fieldtype": "Password",
+   "label": "Chave secreta do webhook (produção)"
+  },
+  {
+   "fieldname": "sec_comportamento",
+   "fieldtype": "Section Break",
+   "label": "Comportamento"
+  },
+  {
+   "default": "30",
+   "description": "Depois desse tempo sem pagamento, a consulta é cancelada e o horário volta a ficar livre. Zero desliga a expiração.",
+   "fieldname": "unpaid_expiry_minutes",
+   "fieldtype": "Int",
+   "label": "Liberar horário não pago após (minutos)"
+  },
+  {
+   "fieldname": "col_comportamento",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Texto que aparece na fatura do cartão do paciente. Máximo 22 caracteres.",
+   "fieldname": "statement_descriptor",
+   "fieldtype": "Data",
+   "label": "Descrição na fatura do cartão"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-07-29 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "CBM Mercado Pago",
+ "name": "Mercado Pago Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
