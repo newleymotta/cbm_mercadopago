@@ -10,7 +10,7 @@ import frappe
 from frappe import _
 from frappe.integrations.utils import create_request_log
 from frappe.model.document import Document
-from frappe.utils import call_hook_method, flt, get_url
+from frappe.utils import call_hook_method, flt, get_url, validate_email_address
 
 from cbm_mercadopago import mp_client
 
@@ -138,8 +138,14 @@ class MercadoPagoSettings(Document):
 			"auto_return": "approved",
 		}
 
-		if kwargs.get("payer_email"):
-			payload["payer"] = {"email": kwargs["payer_email"]}
+		# Só enviamos o pagador se for um e-mail de verdade. O ERPNext usa
+		# `email_to or frappe.session.user` como remetente, e quando o paciente
+		# não tem e-mail isso vira "Administrator" — que o Mercado Pago recusa
+		# com 400, derrubando a geração do link inteira.
+		email = (kwargs.get("payer_email") or "").strip()
+		if "@" in email and validate_email_address(email, throw=False):
+			payload["payer"] = {"email": email}
+
 		if self.statement_descriptor:
 			payload["statement_descriptor"] = self.statement_descriptor
 

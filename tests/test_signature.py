@@ -20,6 +20,7 @@ from cbm_mercadopago.signature import (  # noqa: E402
 	normalize_ts,
 	parse_x_signature,
 	verify,
+	verify_candidatos,
 )
 
 SECRET = "chave-secreta-de-teste"
@@ -148,6 +149,48 @@ def test_expirado_rejeita_antes_de_comparar_hmac():
 	v1 = assinar(SECRET, "p1", "r1", antigo)
 	with pytest.raises(SignatureError, match="janela"):
 		verify(SECRET, f"ts={antigo},v1={v1}", "r1", "p1")
+
+
+# --- data.id vindo do corpo em vez da query string ------------------------
+# Regressão de um bug real: nas notificações do Checkout Pro o Mercado Pago
+# assina incluindo o data.id, mas só o envia no CORPO — não na query string.
+# Validar apenas pela query string rejeitava TODO pagamento real.
+
+def test_aceita_data_id_vindo_do_corpo_quando_ausente_na_query():
+	ts = str(int(time.time()))
+	v1 = assinar(SECRET, "PAY-REAL-123", "req-1", ts)
+	# query string sem data.id (None), corpo com o id
+	encontrado = verify_candidatos(SECRET, f"ts={ts},v1={v1}", "req-1", [None, "PAY-REAL-123"])
+	assert encontrado == "PAY-REAL-123"
+
+
+def test_aceita_data_id_vindo_da_query_quando_presente():
+	ts = str(int(time.time()))
+	v1 = assinar(SECRET, "PAY-SIM-9", "req-1", ts)
+	encontrado = verify_candidatos(SECRET, f"ts={ts},v1={v1}", "req-1", ["PAY-SIM-9", "PAY-SIM-9"])
+	assert encontrado == "PAY-SIM-9"
+
+
+def test_aceita_manifest_sem_id_quando_foi_assim_que_assinaram():
+	ts = str(int(time.time()))
+	v1 = assinar(SECRET, None, "req-1", ts)
+	encontrado = verify_candidatos(SECRET, f"ts={ts},v1={v1}", "req-1", [None, "PAY-X"])
+	assert encontrado is None
+
+
+def test_nenhum_candidato_confere_ainda_rejeita():
+	"""Aceitar duas origens não pode virar porta aberta."""
+	ts = str(int(time.time()))
+	v1 = assinar(SECRET, "PAY-LEGITIMO", "req-1", ts)
+	with pytest.raises(SignatureError, match="não confere"):
+		verify_candidatos(SECRET, f"ts={ts},v1={v1}", "req-1", ["PAY-FALSO", "OUTRO-FALSO"])
+
+
+def test_candidatos_com_segredo_errado_rejeita():
+	ts = str(int(time.time()))
+	v1 = assinar("segredo-do-atacante", "PAY-1", "req-1", ts)
+	with pytest.raises(SignatureError, match="não confere"):
+		verify_candidatos(SECRET, f"ts={ts},v1={v1}", "req-1", [None, "PAY-1"])
 
 
 # --- vetor fixo (regressão) ----------------------------------------------

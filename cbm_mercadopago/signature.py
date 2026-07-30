@@ -92,7 +92,28 @@ def verify(
 	now: float | None = None,
 	max_age: int = MAX_AGE_SECONDS,
 ) -> None:
-	"""Valida a assinatura. Levanta SignatureError se qualquer etapa falhar.
+	"""Valida a assinatura. Levanta SignatureError se qualquer etapa falhar."""
+	verify_candidatos(secret, x_signature, x_request_id, [data_id], now=now, max_age=max_age)
+
+
+def verify_candidatos(
+	secret: str,
+	x_signature: str,
+	x_request_id: str | None,
+	data_ids: list[str | None],
+	now: float | None = None,
+	max_age: int = MAX_AGE_SECONDS,
+) -> str | None:
+	"""Valida aceitando mais de uma origem possível para o `data.id`.
+
+	O Mercado Pago nem sempre repete o `data.id` na query string: nas
+	notificações reais do Checkout Pro ele vem só no corpo, mas a assinatura
+	é calculada **incluindo** esse id. Testar as duas origens cobre os dois
+	formatos sem afrouxar nada — cada tentativa continua sendo um HMAC
+	completo com o nosso segredo.
+
+	Devolve o `data.id` que fechou a conta (ou None, se o manifest válido
+	era o sem id). Levanta SignatureError se nenhum candidato conferir.
 
 	Ordem deliberada: formato, frescor e só então o HMAC — não faz sentido
 	gastar comparação criptográfica numa notificação já expirada.
@@ -103,6 +124,14 @@ def verify(
 	ts, received = parse_x_signature(x_signature)
 	check_freshness(ts, now=now, max_age=max_age)
 
-	expected = compute(secret, build_manifest(data_id, x_request_id, ts))
-	if not hmac.compare_digest(expected, received):
-		raise SignatureError("assinatura não confere")
+	vistos: list[str | None] = []
+	for data_id in data_ids:
+		normalizado = data_id or None
+		if normalizado in vistos:
+			continue
+		vistos.append(normalizado)
+		expected = compute(secret, build_manifest(normalizado, x_request_id, ts))
+		if hmac.compare_digest(expected, received):
+			return normalizado
+
+	raise SignatureError("assinatura não confere")

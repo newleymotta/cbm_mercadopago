@@ -15,7 +15,7 @@ from frappe import _
 from frappe.utils import flt
 
 from cbm_mercadopago import mp_client
-from cbm_mercadopago.signature import SignatureError, verify
+from cbm_mercadopago.signature import SignatureError, verify_candidatos
 
 # Tolerância na conferência de valor (centavos, arredondamento de moeda).
 TOLERANCIA_VALOR = 0.01
@@ -36,13 +36,12 @@ def webhook(**kwargs):
 	  500 — falha transitória (o MP reenvia a cada 15 min, que é o desejado)
 	"""
 	settings = frappe.get_cached_doc("Mercado Pago Settings")
+	corpo = _ler_corpo()
 
-	assinatura_ok = _validar_assinatura(settings)
-	if not assinatura_ok:
+	if not _validar_assinatura(settings, corpo):
 		frappe.local.response["http_status_code"] = 401
 		return {"ok": False, "erro": "assinatura invalida"}
 
-	corpo = _ler_corpo()
 	tipo = corpo.get("type") or frappe.request.args.get("type")
 	if tipo != "payment":
 		# merchant_order, chargebacks etc. não interessam a este fluxo.
@@ -81,30 +80,63 @@ def _pagamento_inexistente(erro: Exception) -> bool:
 	return getattr(resposta, "status_code", None) == 404
 
 
-def _validar_assinatura(settings) -> bool:
+def _validar_assinatura(settings, corpo: dict) -> bool:
 	"""Valida x-signature. Nunca deixa passar por omissão."""
+	da_query = frappe.request.args.get("data.id") or frappe.request.args.get("id")
+	do_corpo = str((corpo.get("data") or {}).get("id") or "") or None
+
 	try:
-		verify(
+		verify_candidatos(
 			secret=settings.get_webhook_secret(),
 			x_signature=frappe.request.headers.get("x-signature"),
 			x_request_id=frappe.request.headers.get("x-request-id"),
-			# O manifest usa o data.id da QUERY STRING. Se não veio, o par é
-			# omitido — usar o valor do corpo aqui produziria manifest errado.
-			data_id=frappe.request.args.get("data.id"),
+			# O Mercado Pago assina com o `data.id`, mas nem sempre o repete na
+			# query string: nas notificações reais do Checkout Pro ele vem só no
+			# corpo. Tentamos as duas origens — cada uma é um HMAC completo, então
+			# aceitar as duas não afrouxa a validação.
+			data_ids=[da_query, do_corpo],
 		)
 		return True
 	except SignatureError as e:
-		# Registra o motivo sem jamais logar a chave secreta.
-		frappe.log_error(
-			title="Mercado Pago: webhook com assinatura invalida",
-			message=(
-				f"motivo: {e}\n"
-				f"x-request-id: {frappe.request.headers.get('x-request-id')}\n"
-				f"data.id: {frappe.request.args.get('data.id')}\n"
-				f"origem: {frappe.local.request_ip}"
-			),
-		)
+		_registrar_falha_de_assinatura(settings, e, da_query, do_corpo, corpo)
 		return False
+
+
+def _registrar_falha_de_assinatura(settings, erro, da_query, do_corpo, corpo):
+	"""Registra o suficiente para diagnosticar — nunca a chave secreta.
+
+	Uma assinatura recusada pode ser ataque ou configuração errada, e
+	distinguir os dois sem esses detalhes é praticamente impossível.
+	"""
+	from cbm_mercadopago.signature import build_manifest, compute, parse_x_signature
+
+	cabecalho = frappe.request.headers.get("x-signature") or ""
+	request_id = frappe.request.headers.get("x-request-id")
+	linhas = [
+		f"motivo: {erro}",
+		f"origem: {frappe.local.request_ip}",
+		f"x-signature: {cabecalho}",
+		f"x-request-id: {request_id}",
+		f"query string: {dict(frappe.request.args)}",
+		f"data.id na query: {da_query!r}",
+		f"data.id no corpo: {do_corpo!r}",
+		f"corpo: {frappe.as_json(corpo)[:400]}",
+	]
+
+	# Mostra qual manifest cada candidato produziria, para revelar de onde vem
+	# a divergência sem nunca expor o segredo.
+	segredo = settings.get_webhook_secret()
+	if segredo:
+		try:
+			_, recebido = parse_x_signature(cabecalho)
+			linhas.append(f"v1 recebido: {recebido}")
+			for rotulo, valor in (("query", da_query), ("corpo", do_corpo), ("sem id", None)):
+				manifest = build_manifest(valor, request_id, parse_x_signature(cabecalho)[0])
+				linhas.append(f"  [{rotulo}] manifest={manifest!r} -> {compute(segredo, manifest)}")
+		except Exception:
+			pass
+
+	frappe.log_error(title="Mercado Pago: webhook com assinatura invalida", message="\n".join(linhas))
 
 
 def _ler_corpo() -> dict:
