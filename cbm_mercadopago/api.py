@@ -54,7 +54,17 @@ def webhook(**kwargs):
 
 	try:
 		resultado = processar_pagamento(settings, str(payment_id))
-	except Exception:
+	except Exception as e:
+		if _pagamento_inexistente(e):
+			# 404 é definitivo: ou o id não existe, ou é de outra conta. Reenviar
+			# não resolveria, então respondemos 200 para o Mercado Pago parar de
+			# insistir a cada 15 minutos.
+			frappe.log_error(
+				title="Mercado Pago: notificacao de pagamento inexistente",
+				message=f"payment_id={payment_id} — a API do Mercado Pago respondeu 404.",
+			)
+			return {"ok": True, "resultado": "pagamento_inexistente"}
+
 		frappe.log_error(
 			title="Mercado Pago: falha ao processar webhook",
 			message=f"payment_id={payment_id}\n\n{frappe.get_traceback()}",
@@ -63,6 +73,12 @@ def webhook(**kwargs):
 		return {"ok": False, "erro": "falha transitoria"}
 
 	return {"ok": True, "resultado": resultado}
+
+
+def _pagamento_inexistente(erro: Exception) -> bool:
+	"""Distingue 'este pagamento não existe' (definitivo) de falha de rede."""
+	resposta = getattr(erro, "response", None)
+	return getattr(resposta, "status_code", None) == 404
 
 
 def _validar_assinatura(settings) -> bool:
