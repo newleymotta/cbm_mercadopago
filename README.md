@@ -56,6 +56,30 @@ O webhook é público por natureza, então tudo nele é tratado como hostil:
    `https://<seu-site>/api/method/cbm_mercadopago.api.webhook`
 3. Ajustar **Liberar horário não pago após (minutos)** — padrão 30, zero desliga.
 
+## E-mail
+
+O link de pagamento é enviado pelo app, não pelo ERPNext: o nativo só envia
+dentro do `before_submit` do Payment Request, então um pedido já existente
+nunca reenviaria nada. O envio é **síncrono**, para que uma falha de SMTP
+apareça na tela em vez de sumir num job — a tela nunca anuncia envio que não
+aconteceu.
+
+Requisitos, conferidos antes de qualquer envio:
+
+- uma `Email Account` de saída configurada (`default_outgoing`);
+- e-mail no cadastro do paciente;
+- `{{ payment_url }}` no campo **Mensagem** da `Payment Gateway Account`, senão
+  o e-mail sairia sem o link.
+
+O **aviso de consulta confirmada** é uma `Notification` comum (texto editável
+na tela), com `Evento = Method` e `Método = cbm_pagamento_confirmado`. Não é
+"Value Change" de propósito: o webhook grava o status com `frappe.db.set_value`,
+que não dispara gatilho de documento, e o aviso jamais sairia. Os dois caminhos
+— pagamento aprovado e confirmação manual na tela — chamam esse mesmo gatilho.
+O destinatário é o Custom Field `patient_email` (`fetch_from = patient.email`),
+necessário porque o destinatário de uma `Notification` não atravessa o vínculo
+até o paciente.
+
 ## Testes
 
 ```bash

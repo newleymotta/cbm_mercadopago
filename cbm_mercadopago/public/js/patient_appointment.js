@@ -100,8 +100,15 @@ function enviar_por_email(frm) {
 		args: { appointment: frm.doc.name, enviar_email: 1 },
 		freeze: true,
 		freeze_message: __("Enviando..."),
-		callback: () => {
-			frappe.show_alert({ message: __("Link enviado ao paciente."), indicator: "green" });
+		callback: (r) => {
+			// Só anuncia envio se o servidor disser para quem enviou. Quando
+			// não há como enviar, a chamada falha e o Frappe já mostra o erro
+			// — nada de "enviado" na tela sem e-mail nenhum ter saído.
+			if (!r.message || !r.message.enviado_para) return;
+			frappe.show_alert({
+				message: __("E-mail enviado para {0}", [r.message.enviado_para]),
+				indicator: "green",
+			});
 		},
 	});
 }

@@ -152,8 +152,13 @@ class MercadoPagoSettings(Document):
 		return payload
 
 	def _extrair_init_point(self, preferencia: dict) -> str | None:
-		if self.use_sandbox:
-			# Credenciais de teste já devolvem um init_point de teste; o
-			# sandbox_init_point é o formato legado e nem sempre vem.
-			return preferencia.get("sandbox_init_point") or preferencia.get("init_point")
-		return preferencia.get("init_point")
+		"""Sempre o `init_point`, inclusive em teste.
+
+		Quem manda no ambiente é a credencial: com token de teste, o
+		`init_point` já é o checkout de teste. O `sandbox_init_point` é o
+		formato legado e hoje entra em laço de redirecionamento
+		(`ERR_TOO_MANY_REDIRECTS`) — o checkout não chega nem a abrir, então
+		nenhum pagamento é criado e nenhuma notificação chega. Foi o que
+		manteve a Fase 4 sem um pagamento aprovado ponta a ponta.
+		"""
+		return preferencia.get("init_point") or preferencia.get("sandbox_init_point")

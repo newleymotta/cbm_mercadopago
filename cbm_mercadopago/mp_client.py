@@ -49,6 +49,21 @@ def obter_pagamento(access_token: str, payment_id: str) -> dict:
 	)
 
 
+def buscar_pagamentos(access_token: str, external_reference: str) -> list[dict]:
+	"""GET /v1/payments/search — pagamentos de uma cobrança nossa.
+
+	Usado como rede de segurança antes de liberar um horário por falta de
+	pagamento: se uma notificação se perdeu (servidor fora do ar, rede,
+	erro transitório), o dinheiro já entrou e ninguém avisou.
+	"""
+	resposta = make_get_request(
+		f"{API_BASE}/v1/payments/search",
+		headers=_headers(access_token),
+		params={"external_reference": external_reference},
+	)
+	return (resposta or {}).get("results") or []
+
+
 def esta_pago(pagamento: dict) -> bool:
 	return (pagamento or {}).get("status") in STATUS_PAGOS
 

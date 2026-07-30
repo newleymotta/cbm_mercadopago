@@ -14,7 +14,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-from cbm_mercadopago import mp_client
+from cbm_mercadopago import appointment, mp_client
 from cbm_mercadopago.signature import SignatureError, verify_candidatos
 
 # Tolerância na conferência de valor (centavos, arredondamento de moeda).
@@ -35,6 +35,9 @@ def webhook(**kwargs):
 	  200 — processado, ou ignorável de forma permanente (o MP para de reenviar)
 	  500 — falha transitória (o MP reenvia a cada 15 min, que é o desejado)
 	"""
+	if _e_ipn_antigo():
+		return {"ok": True, "ignorado": "ipn"}
+
 	settings = frappe.get_cached_doc("Mercado Pago Settings")
 	corpo = _ler_corpo()
 
@@ -72,6 +75,23 @@ def webhook(**kwargs):
 		return {"ok": False, "erro": "falha transitoria"}
 
 	return {"ok": True, "resultado": resultado}
+
+
+def _e_ipn_antigo() -> bool:
+	"""O Mercado Pago avisa o mesmo evento duas vezes, em dois formatos.
+
+	O webhook moderno chega como `?data.id=...&type=payment`, com corpo JSON e
+	assinatura que confere com a chave do painel. O IPN antigo chega como
+	`?id=...&topic=payment`, com uma assinatura que **não** confere com essa
+	chave — e virava um 401 a cada pagamento, com cara de ataque. Foi o que fez
+	a Fase 4 parecer ter um bug de assinatura.
+
+	Ignorar o IPN não perde evento nenhum: os dois formatos chegam juntos, e
+	nunca agimos com base no IPN. Se ainda assim um aviso se perder, a rotina
+	de expiração confere na API do Mercado Pago antes de liberar o horário.
+	"""
+	args = frappe.request.args
+	return bool(args.get("topic")) and not args.get("data.id")
 
 
 def _pagamento_inexistente(erro: Exception) -> bool:
@@ -251,6 +271,11 @@ def confirmar_consulta(pr) -> str | None:
 
 	if status_atual != "Confirmed":
 		frappe.db.set_value("Patient Appointment", consulta, "status", "Confirmed")
+		# `db.set_value` não dispara gatilho de documento — de propósito, para
+		# não rodar as validações da consulta no meio de uma baixa de
+		# pagamento. Por isso o aviso ao paciente é chamado aqui, na mão.
+		appointment.disparar_aviso_de_confirmacao(consulta)
+
 	return consulta
 
 
