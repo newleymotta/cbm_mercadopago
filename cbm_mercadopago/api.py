@@ -59,6 +59,14 @@ def webhook(**kwargs):
 	if not payment_id:
 		return {"ok": True, "ignorado": "sem data.id assinado"}
 
+	# Daqui em diante o pedido já está autenticado pela assinatura — o mesmo
+	# nível de confiança que a rotina de conciliação tem ao rodar como
+	# Administrator. Sem isso, `pr.run_method("set_as_paid")` esbarra num
+	# `frappe.has_permission(..., throw=True)` de dentro do hrms
+	# (set_missing_ref_details) checando o usuário Guest da sessão do webhook,
+	# e todo pagamento cai para a conciliação em vez de confirmar na hora.
+	usuario_original = frappe.session.user
+	frappe.set_user("Administrator")
 	try:
 		resultado = processar_pagamento(settings, str(payment_id))
 	except Exception as e:
@@ -78,6 +86,8 @@ def webhook(**kwargs):
 		)
 		frappe.local.response["http_status_code"] = 500
 		return {"ok": False, "erro": "falha transitoria"}
+	finally:
+		frappe.set_user(usuario_original)
 
 	return {"ok": True, "resultado": resultado}
 
