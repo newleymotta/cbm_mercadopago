@@ -7,7 +7,18 @@ Este arquivo é versionado justamente para poder ser re-executado antes de todo
 go-live e depois de toda mudança que toque em dinheiro.
 
 **Roda contra o ambiente de teste.** Recusa-se a executar com a trava de sandbox
-desligada — não é um script para apontar para produção.
+desligada — não é um script para apontar para produção. Como o sistema entrou em
+produção em 2026-07-31, rodar isto agora exige **ligar a trava de teste por alguns
+minutos e desligar depois** (uma caixinha em `Mercado Pago Settings`, com o dono).
+
+**Lição de 2026-08-01, gravada aqui porque se repete:** esta bateria tinha 28
+verificações e mesmo assim deixou passar um defeito que quebrava *todo* pagamento
+real. Os ataques batem no webhook por HTTP de verdade, mas sempre contra um
+pagamento inexistente — param no 404, antes do `set_as_paid`. Os testes de dinheiro
+chegam ao `set_as_paid`, mas chamam a função direto, como Administrator. O defeito
+morava na **junta** entre as duas metades: o caminho do dinheiro percorrido com a
+sessão real do webhook (Guest). Ao acrescentar um caso aqui, pergunte não só "que
+comportamento eu testo", mas **"em que contexto de execução ele roda em produção"**.
 
 Como rodar, de dentro do container backend:
 
@@ -352,8 +363,13 @@ def _limpar(verificar=True):
 		checar("limpeza não deixou resíduo do teste", all(v == 0 for v in restante.values()), f"{restante}")
 
 
-def montar_cenario():
-	"""Cria consulta + fatura + pedido de pagamento descartáveis."""
+def montar_cenario(hora="09:00:00"):
+	"""Cria consulta + fatura + pedido de pagamento descartáveis.
+
+	`hora` existe porque a bateria precisa de mais de um cenário vivo ao mesmo
+	tempo (o do fluxo de dinheiro e o da regressão de sessão), e o Healthcare
+	recusa duas consultas do mesmo profissional no mesmo horário.
+	"""
 	dept = f"{PREFIXO} Especialidade"
 	if not frappe.db.exists("Medical Department", dept):
 		d = frappe.new_doc("Medical Department")
@@ -396,7 +412,7 @@ def montar_cenario():
 			"practitioner": prof,
 			"appointment_type": tipo,
 			"appointment_date": add_days(nowdate(), 7),
-			"appointment_time": "09:00:00",
+			"appointment_time": hora,
 			"company": EMPRESA,
 			"duration": 30,
 			# Sem vídeo de propósito: não é o que esta bateria testa, e evita criar
@@ -439,6 +455,55 @@ obter_original = mp_client.obter_pagamento
 buscar_original = mp_client.buscar_pagamentos
 
 try:
+	# --- REGRESSÃO: a baixa funciona na SESSÃO DO WEBHOOK (Guest)? ---
+	#
+	# Este caso existe por causa de um defeito real, achado só no primeiro
+	# pagamento de produção (2026-07-31). O webhook é `allow_guest=True`, então
+	# roda como Guest; o `set_as_paid` do ERPNext dispara um gancho do HRMS
+	# (`hrms/overrides/employee_payment_entry.py:239`) que faz
+	# `frappe.has_permission(..., throw=True)` contra o usuário da sessão.
+	# Guest nunca passa: todo pagamento morria com PermissionError e só era
+	# salvo pela conciliação de 5 minutos, minutos depois.
+	#
+	# **Por que a bateria de 28 não pegou** — e é a lição que este caso carrega:
+	# os testes de ataque batem no webhook por HTTP de verdade, mas sempre com
+	# um pagamento inexistente, então param no 404 sem nunca chegar ao
+	# `set_as_paid`. Os testes de dinheiro chegam ao `set_as_paid`, mas chamam
+	# `processar_pagamento` direto, como Administrator. O buraco era exatamente
+	# a interseção: caminho do dinheiro **com a sessão do webhook**. Testar as
+	# duas metades separadamente não testa a junta entre elas.
+	consulta_g, pedido_g, fatura_g = montar_cenario(hora="10:00:00")
+	referencia_g = frappe.db.get_value(
+		"Integration Request",
+		{"reference_docname": pedido_g, "integration_request_service": "Mercado Pago"},
+		"name",
+	)
+	mp_client.obter_pagamento = lambda t, i: pagamento_falso(referencia_g)
+
+	usuario_antes = frappe.session.user
+	erro_guest = None
+	try:
+		frappe.set_user("Guest")
+		resultado_g = api.processar_pagamento(settings, "999000222")
+		frappe.db.commit()
+	except Exception as e:
+		frappe.db.rollback()
+		erro_guest = f"{type(e).__name__}: {str(e)[:120]}"
+		resultado_g = None
+	finally:
+		frappe.set_user(usuario_antes)
+
+	checar(
+		"baixa funciona na sessão do webhook (Guest), sem PermissionError",
+		erro_guest is None and str(resultado_g or "").startswith("pago"),
+		f"erro={erro_guest} resultado={resultado_g}",
+	)
+	checar(
+		"a baixa como Guest confirma a consulta",
+		frappe.db.get_value("Patient Appointment", consulta_g, "status") == "Confirmed",
+		f"status={frappe.db.get_value('Patient Appointment', consulta_g, 'status')}",
+	)
+
 	# --- valor menor que o cobrado: nunca vira baixa automática ---
 	mp_client.obter_pagamento = lambda t, i: pagamento_falso(referencia, valor=VALOR - 50)
 	resultado = api.processar_pagamento(settings, "999000111")

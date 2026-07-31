@@ -59,14 +59,6 @@ def webhook(**kwargs):
 	if not payment_id:
 		return {"ok": True, "ignorado": "sem data.id assinado"}
 
-	# Daqui em diante o pedido já está autenticado pela assinatura — o mesmo
-	# nível de confiança que a rotina de conciliação tem ao rodar como
-	# Administrator. Sem isso, `pr.run_method("set_as_paid")` esbarra num
-	# `frappe.has_permission(..., throw=True)` de dentro do hrms
-	# (set_missing_ref_details) checando o usuário Guest da sessão do webhook,
-	# e todo pagamento cai para a conciliação em vez de confirmar na hora.
-	usuario_original = frappe.session.user
-	frappe.set_user("Administrator")
 	try:
 		resultado = processar_pagamento(settings, str(payment_id))
 	except Exception as e:
@@ -86,8 +78,6 @@ def webhook(**kwargs):
 		)
 		frappe.local.response["http_status_code"] = 500
 		return {"ok": False, "erro": "falha transitoria"}
-	finally:
-		frappe.set_user(usuario_original)
 
 	return {"ok": True, "resultado": resultado}
 
@@ -196,7 +186,34 @@ def processar_pagamento(settings, payment_id: str) -> str:
 	"""Consulta o pagamento real na API do MP e dá baixa, se for o caso.
 
 	Idempotente: reprocessar a mesma notificação não gera segundo lançamento.
+
+	**Roda como Administrator, de propósito.** Não é conveniência: o
+	`set_as_paid` do ERPNext dispara um gancho do HRMS
+	(`hrms/overrides/employee_payment_entry.py:239`) que faz
+	`frappe.has_permission(..., throw=True)` contra o usuário da *sessão*. O
+	webhook é `allow_guest=True`, então a sessão dele é Guest e nunca passa —
+	em produção isso fazia todo pagamento morrer com `PermissionError` e só
+	ser salvo pela conciliação de 5 minutos, minutos depois (achado no primeiro
+	pagamento real, 2026-07-31).
+
+	A elevação mora **aqui**, e não no `webhook()`, porque este é o único ponto
+	por onde todo caminho do dinheiro passa — webhook e rotina de conciliação —
+	e assim a garantia vale para qualquer chamador futuro, além de ser
+	verificável direto pela bateria (`verificacao_seguranca.py`, seção D).
+
+	Elevar aqui é seguro porque esta função **não é `@frappe.whitelist()`**: só
+	se chega nela pelo webhook, já com a assinatura conferida, ou pela rotina
+	agendada. Quem autentica é a assinatura HMAC, não a sessão.
 	"""
+	usuario_original = frappe.session.user
+	frappe.set_user("Administrator")
+	try:
+		return _processar_pagamento(settings, payment_id)
+	finally:
+		frappe.set_user(usuario_original)
+
+
+def _processar_pagamento(settings, payment_id: str) -> str:
 	pagamento = mp_client.obter_pagamento(settings.get_access_token(), payment_id)
 
 	if not mp_client.esta_pago(pagamento):
