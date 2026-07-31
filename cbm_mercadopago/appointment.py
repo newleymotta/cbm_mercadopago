@@ -330,11 +330,6 @@ def _gateways_configurados() -> list[str]:
 	)
 
 
-@frappe.whitelist()
-def listar_gateways() -> list[str]:
-	return _gateways_configurados()
-
-
 def _resolver_conta_gateway(gateway: str | None):
 	"""Decide qual meio de pagamento usar.
 

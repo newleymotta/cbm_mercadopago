@@ -41,7 +41,8 @@ def webhook(**kwargs):
 	settings = frappe.get_cached_doc("Mercado Pago Settings")
 	corpo = _ler_corpo()
 
-	if not _validar_assinatura(settings, corpo):
+	assinatura_confere, payment_id = _validar_assinatura(settings, corpo)
+	if not assinatura_confere:
 		frappe.local.response["http_status_code"] = 401
 		return {"ok": False, "erro": "assinatura invalida"}
 
@@ -50,9 +51,13 @@ def webhook(**kwargs):
 		# merchant_order, chargebacks etc. não interessam a este fluxo.
 		return {"ok": True, "ignorado": tipo}
 
-	payment_id = (corpo.get("data") or {}).get("id") or frappe.request.args.get("data.id")
+	# Agimos **só** sobre o id que a assinatura cobre. Ler o id do corpo seria
+	# agir sobre algo que ninguém assinou: quem tivesse uma assinatura válida
+	# de uma notificação nossa poderia trocar o alvo. As conferências seguintes
+	# (external_reference, valor, idempotência) já barrariam prejuízo, mas isso
+	# é segurança por consequência; aqui ela passa a ser por construção.
 	if not payment_id:
-		return {"ok": True, "ignorado": "sem data.id"}
+		return {"ok": True, "ignorado": "sem data.id assinado"}
 
 	try:
 		resultado = processar_pagamento(settings, str(payment_id))
@@ -100,13 +105,17 @@ def _pagamento_inexistente(erro: Exception) -> bool:
 	return getattr(resposta, "status_code", None) == 404
 
 
-def _validar_assinatura(settings, corpo: dict) -> bool:
-	"""Valida x-signature. Nunca deixa passar por omissão."""
+def _validar_assinatura(settings, corpo: dict) -> tuple[bool, str | None]:
+	"""Valida x-signature. Nunca deixa passar por omissão.
+
+	Devolve `(confere, data_id_assinado)`. O segundo item é o id que fechou a
+	conta do HMAC — é o único que o chamador pode usar como alvo.
+	"""
 	da_query = frappe.request.args.get("data.id") or frappe.request.args.get("id")
 	do_corpo = str((corpo.get("data") or {}).get("id") or "") or None
 
 	try:
-		verify_candidatos(
+		assinado = verify_candidatos(
 			secret=settings.get_webhook_secret(),
 			x_signature=frappe.request.headers.get("x-signature"),
 			x_request_id=frappe.request.headers.get("x-request-id"),
@@ -116,10 +125,10 @@ def _validar_assinatura(settings, corpo: dict) -> bool:
 			# aceitar as duas não afrouxa a validação.
 			data_ids=[da_query, do_corpo],
 		)
-		return True
+		return True, assinado
 	except SignatureError as e:
 		_registrar_falha_de_assinatura(settings, e, da_query, do_corpo, corpo)
-		return False
+		return False, None
 
 
 def _registrar_falha_de_assinatura(settings, erro, da_query, do_corpo, corpo):
@@ -128,7 +137,7 @@ def _registrar_falha_de_assinatura(settings, erro, da_query, do_corpo, corpo):
 	Uma assinatura recusada pode ser ataque ou configuração errada, e
 	distinguir os dois sem esses detalhes é praticamente impossível.
 	"""
-	from cbm_mercadopago.signature import build_manifest, compute, parse_x_signature
+	from cbm_mercadopago.signature import build_manifest, parse_x_signature
 
 	cabecalho = frappe.request.headers.get("x-signature") or ""
 	request_id = frappe.request.headers.get("x-request-id")
@@ -143,18 +152,19 @@ def _registrar_falha_de_assinatura(settings, erro, da_query, do_corpo, corpo):
 		f"corpo: {frappe.as_json(corpo)[:400]}",
 	]
 
-	# Mostra qual manifest cada candidato produziria, para revelar de onde vem
-	# a divergência sem nunca expor o segredo.
-	segredo = settings.get_webhook_secret()
-	if segredo:
-		try:
-			_, recebido = parse_x_signature(cabecalho)
-			linhas.append(f"v1 recebido: {recebido}")
-			for rotulo, valor in (("query", da_query), ("corpo", do_corpo), ("sem id", None)):
-				manifest = build_manifest(valor, request_id, parse_x_signature(cabecalho)[0])
-				linhas.append(f"  [{rotulo}] manifest={manifest!r} -> {compute(segredo, manifest)}")
-		except Exception:
-			pass
+	# Registra QUAIS manifests foram tentados, mas nunca o HMAC que cada um
+	# produziria. O atacante escolhe `data.id` e `x-request-id`, ou seja, escolhe
+	# o texto assinado: publicar o resultado do cálculo transformaria este
+	# registro num oráculo de assinaturas para quem tivesse acesso ao Error Log.
+	# O despejo dos HMACs existiu para caçar a recusa de assinatura da Fase 4 —
+	# que acabou sendo o formato IPN antigo, não o algoritmo. Propósito cumprido.
+	try:
+		ts, recebido = parse_x_signature(cabecalho)
+		linhas.append(f"v1 recebido: {recebido}")
+		for rotulo, valor in (("query", da_query), ("corpo", do_corpo), ("sem id", None)):
+			linhas.append(f"  [{rotulo}] manifest tentado: {build_manifest(valor, request_id, ts)!r}")
+	except Exception:
+		pass
 
 	frappe.log_error(title="Mercado Pago: webhook com assinatura invalida", message="\n".join(linhas))
 
