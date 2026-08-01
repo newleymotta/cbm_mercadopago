@@ -265,6 +265,23 @@ def _obter_ou_criar_paciente(nome: str, email: str, telefone: str) -> str:
 	return p.name
 
 
+def _unidade_do_profissional(profissional: str) -> str | None:
+	"""Unidade de serviço amarrada à agenda do profissional.
+
+	**Sem isto, dois pacientes reservam o mesmo horário.** O motor descobre o que
+	está ocupado consultando `Patient Appointment` **filtrado por `service_unit`**
+	(`get_available_slots`); consulta criada sem esse campo simplesmente não é
+	encontrada, e o horário continua parecendo livre para o próximo. Foi assim que
+	o caso "dois no mesmo horário" reprovou na primeira execução da bateria — e as
+	26 consultas que já existiam no sistema estavam todas sem o campo.
+	"""
+	doc = frappe.get_cached_doc("Healthcare Practitioner", profissional)
+	for linha in doc.practitioner_schedules or []:
+		if linha.service_unit:
+			return linha.service_unit
+	return None
+
+
 def _criar_consulta(paciente: str, profissional: str, servico: str, data: str, hora: str) -> str:
 	_, duracao = _preco_e_duracao(servico)
 	empresa = frappe.defaults.get_user_default("Company") or frappe.get_all(
@@ -282,6 +299,7 @@ def _criar_consulta(paciente: str, profissional: str, servico: str, data: str, h
 			"appointment_time": hora,
 			"duration": duracao,
 			"company": empresa,
+			"service_unit": _unidade_do_profissional(profissional),
 			"add_video_conferencing": 1,
 		}
 	)
