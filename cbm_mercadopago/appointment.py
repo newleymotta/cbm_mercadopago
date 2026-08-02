@@ -17,6 +17,17 @@ from frappe import _
 
 from cbm_mercadopago import envio
 
+try:
+	from cbm_whatsapp.automation import (
+		queue_appointment_confirmation_whatsapp,
+		queue_meet_link_whatsapp,
+		queue_payment_link_whatsapp,
+	)
+except Exception:  # pragma: no cover - app may not be installed yet in local test env
+	queue_appointment_confirmation_whatsapp = None
+	queue_meet_link_whatsapp = None
+	queue_payment_link_whatsapp = None
+
 GATEWAY = "Mercado Pago"
 
 # Situações em que não faz sentido cobrar.
@@ -79,6 +90,8 @@ def gerar_link_pagamento(appointment: str, enviar_email: int = 0, gateway: str |
 	if enviar:
 		_enviar_link_por_email(payment_request, email_paciente)
 		resultado["enviado_para"] = email_paciente
+
+	_disparar_whatsapp_link_pagamento(doc.name, payment_request.name)
 
 	return resultado
 
@@ -277,9 +290,47 @@ def disparar_aviso_de_confirmacao(consulta: str):
 		doc = frappe.get_doc("Patient Appointment", consulta)
 		_sincronizar_email_do_paciente(doc)
 		doc.run_method(EVENTO_CONFIRMACAO)
+		_disparar_whatsapp_confirmacao(consulta)
+		_disparar_whatsapp_meet(consulta)
 	except Exception:
 		frappe.log_error(
 			title="CBM: falha ao enviar aviso de consulta confirmada",
+			message=f"Consulta: {consulta}\n\n{frappe.get_traceback()}",
+		)
+
+
+def _disparar_whatsapp_link_pagamento(consulta: str, payment_request: str):
+	if not queue_payment_link_whatsapp:
+		return
+	try:
+		queue_payment_link_whatsapp(consulta, payment_request)
+	except Exception:
+		frappe.log_error(
+			title="CBM: falha ao enviar link de pagamento por WhatsApp",
+			message=f"Consulta: {consulta}\nPayment Request: {payment_request}\n\n{frappe.get_traceback()}",
+		)
+
+
+def _disparar_whatsapp_confirmacao(consulta: str):
+	if not queue_appointment_confirmation_whatsapp:
+		return
+	try:
+		queue_appointment_confirmation_whatsapp(consulta)
+	except Exception:
+		frappe.log_error(
+			title="CBM: falha ao enviar confirmacao por WhatsApp",
+			message=f"Consulta: {consulta}\n\n{frappe.get_traceback()}",
+		)
+
+
+def _disparar_whatsapp_meet(consulta: str):
+	if not queue_meet_link_whatsapp:
+		return
+	try:
+		queue_meet_link_whatsapp(consulta)
+	except Exception:
+		frappe.log_error(
+			title="CBM: falha ao enviar link do Meet por WhatsApp",
 			message=f"Consulta: {consulta}\n\n{frappe.get_traceback()}",
 		)
 

@@ -17,6 +17,11 @@ from frappe.utils import flt
 from cbm_mercadopago import appointment, mp_client
 from cbm_mercadopago.signature import SignatureError, verify_candidatos
 
+try:
+	from cbm_whatsapp.automation import queue_payment_confirmation_whatsapp
+except Exception:  # pragma: no cover - app may not be installed yet in local test env
+	queue_payment_confirmation_whatsapp = None
+
 # Tolerância na conferência de valor (centavos, arredondamento de moeda).
 TOLERANCIA_VALOR = 0.01
 
@@ -275,8 +280,21 @@ def _baixar_payment_request(integration, pr_name: str, pagamento: dict, payment_
 	integration.handle_success(pagamento)
 
 	confirmada = confirmar_consulta(pr)
+	_disparar_whatsapp_pagamento(pr.name)
 	frappe.db.commit()
 	return f"pago:{confirmada}" if confirmada else "pago"
+
+
+def _disparar_whatsapp_pagamento(payment_request_name: str):
+	if not queue_payment_confirmation_whatsapp:
+		return
+	try:
+		queue_payment_confirmation_whatsapp(payment_request_name)
+	except Exception:
+		frappe.log_error(
+			title="Mercado Pago: falha ao enviar confirmacao de pagamento por WhatsApp",
+			message=f"Payment Request: {payment_request_name}\n\n{frappe.get_traceback()}",
+		)
 
 
 def confirmar_consulta(pr) -> str | None:

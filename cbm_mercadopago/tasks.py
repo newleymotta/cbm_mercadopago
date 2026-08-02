@@ -20,6 +20,11 @@ GATEWAY = "Mercado Pago"
 # Só expira consulta que ainda está esperando o paciente aparecer.
 STATUS_EXPIRAVEIS = {"Scheduled", "Open"}
 
+try:
+	from cbm_whatsapp.automation import queue_payment_confirmation_whatsapp
+except Exception:  # pragma: no cover - app may not be installed yet in local test env
+	queue_payment_confirmation_whatsapp = None
+
 
 def expirar_agendamentos_nao_pagos():
 	"""Concilia as cobranças pendentes e expira as que continuam sem pagamento.
@@ -148,3 +153,15 @@ def _expirar(payment_request: str, sales_invoice: str):
 		status_atual = frappe.db.get_value("Patient Appointment", consulta, "status")
 		if status_atual in STATUS_EXPIRAVEIS:
 			frappe.db.set_value("Patient Appointment", consulta, "status", "Cancelled")
+
+
+def _disparar_whatsapp_pagamento(payment_request_name: str):
+	if not queue_payment_confirmation_whatsapp:
+		return
+	try:
+		queue_payment_confirmation_whatsapp(payment_request_name)
+	except Exception:
+		frappe.log_error(
+			title="Mercado Pago: falha ao avisar pagamento por WhatsApp na rotina",
+			message=f"Payment Request: {payment_request_name}\n\n{frappe.get_traceback()}",
+		)
